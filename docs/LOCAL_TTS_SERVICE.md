@@ -1,50 +1,26 @@
-# Local text-to-speech service guide
+# Local text-to-speech service
 
-## Purpose
+`apps/tts` uses Piper and the bundled `en_US-lessac-medium` voice to synthesize complete mono 24 kHz PCM16 WAV responses. It retains no audio.
 
-The local TTS service converts the exact interviewer sentence into audio the browser can play. It does not generate interview content; it only speaks text produced by the LLM.
+## Docker
 
-## What it receives
-
-Each request contains:
-
-- the exact text to speak
-- an optional voice name or voice setting
-- a cancellation or timeout signal from the server
-
-Example conceptual request:
-
-```json
-{
-  "text": "Hello Maya. Let us begin with your recent project.",
-  "voice": "professional-default"
-}
+```bash
+docker compose up --build --wait tts
+curl --fail http://127.0.0.1:18082/health
 ```
 
-## What it returns
+## Native setup
 
-Return one complete audio result with:
+```bash
+python3.12 -m venv apps/tts/.venv
+apps/tts/.venv/bin/python -m pip install --requirement apps/tts/requirements.txt
+apps/tts/.venv/bin/python -m piper.download_voices \
+  --download-dir apps/tts/models en_US-lessac-medium
+TTS_MODEL_DIR="$PWD/apps/tts/models" \
+  apps/tts/.venv/bin/uvicorn tts_service:app \
+  --app-dir apps/tts --host 127.0.0.1 --port 8001 --workers 1
+```
 
-- audio bytes
-- the correct MIME type
-- sample rate and channel count when useful
+Configure NestJS with `LOCAL_TTS_URL`, `LOCAL_TTS_VOICE`, and `LOCAL_TTS_TIMEOUT_MS`. `POST /synthesize` accepts bounded text plus the `professional-default` voice. Only one synthesis runs per worker; concurrent work is rejected instead of queued.
 
-For the first version, mono PCM WAV is recommended because browsers can decode it reliably. Mono 24 kHz, 16-bit WAV matches the current Gemini path, but another clear format is acceptable if the NestJS adapter converts it.
-
-The current application does not need audio streaming. Generate the full utterance, then return it once so the browser plays one smooth audio source.
-
-## Required behavior
-
-- Speak exactly the supplied text without adding or removing words.
-- Use a calm, natural, professional interviewer voice.
-- Keep volume and speaking speed consistent between turns.
-- Return valid, non-empty audio with truthful format metadata.
-- Reject empty text or an unknown voice with a clear error.
-- Respect cancellation, timeouts, and a maximum text length.
-- Do not store generated interview audio after the request finishes.
-
-## How to deliver it
-
-Run it as a separate local process or container. A simple HTTP operation such as `/synthesize` and a `/health` check are sufficient. Returning binary audio with metadata headers is preferred; returning base64 and metadata in JSON is also acceptable initially.
-
-It is ready when the output plays smoothly in a normal browser/audio player, its duration is reasonable for the text, repeated turns have consistent volume, invalid input fails cleanly, and the health check confirms the voice model is loaded.
+See [`apps/tts/README.md`](../apps/tts/README.md) for the full contract, licensing notes, and tests.

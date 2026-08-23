@@ -1,43 +1,27 @@
-# Local speech-to-text service guide
+# Local speech-to-text service
 
-## Purpose
+`apps/stt` transcribes one completed candidate turn using faster-whisper. It retains no audio and makes no interview decisions.
 
-The local STT service converts one completed candidate answer from audio into plain text. It must not answer the candidate or make interview decisions.
+## Docker
 
-## What it receives
+The default image embeds the `small` model and exposes readiness on port 18083:
 
-Each request contains:
-
-- the complete audio bytes for one candidate turn
-- the audio MIME type, such as `audio/wav` or `audio/l16`
-- sample rate and channel count when the bytes are raw PCM
-- a cancellation or timeout signal from the server
-
-The current browser produces mono 16 kHz signed 16-bit little-endian PCM. The future service may accept that directly, or the NestJS adapter can wrap/convert it before sending. Supporting WAV is the simplest minimum requirement.
-
-## What it returns
-
-Return only the spoken words as one text string:
-
-```json
-{ "text": "I used a queue to process the background jobs." }
+```bash
+docker compose up --build --wait stt
+curl --fail http://127.0.0.1:18083/health
 ```
 
-Return an empty string when there is no intelligible speech. Do not add speaker labels, explanations, corrections, summaries, or punctuation commentary.
+## Native setup
 
-## Required behavior
+```bash
+python3.12 -m venv apps/stt/.venv
+apps/stt/.venv/bin/python -m pip install --requirement apps/stt/requirements.txt
+apps/stt/.venv/bin/uvicorn stt_service:app \
+  --app-dir apps/stt --host 127.0.0.1 --port 8002 --workers 1
+```
 
-- Transcribe the candidate faithfully, including imperfect answers.
-- Work with normal laptop microphone noise and short pauses.
-- Reject unsupported or corrupt audio with a clear error.
-- Place a reasonable limit on audio duration and byte size.
-- Do not store raw audio after the request finishes.
-- Finish within the server's configured timeout.
+Configure NestJS with `LOCAL_STT_URL` and `LOCAL_STT_TIMEOUT_MS`. Service settings include `WHISPER_MODEL`, `WHISPER_DEVICE`, `WHISPER_COMPUTE_TYPE`, `STT_MAX_AUDIO_BYTES`, `STT_MAX_AUDIO_SECONDS`, and `STT_TIMEOUT_SECONDS`.
 
-Silence detection and turn timing are not this service's job. The client/server decides when the candidate has stopped speaking and sends one complete turn.
+`POST /transcribe` accepts mono/stereo PCM16 WAV or the application's signed little-endian `audio/l16` convention with sample-rate/channel fields. The browser sends mono 16 kHz `audio/l16`. Only one transcription runs per worker; concurrent work is rejected rather than queued.
 
-## How to deliver it
-
-Run it as a separate local process or container. A simple HTTP upload operation such as `/transcribe` plus `/health` is enough. Binary audio upload is preferred, although base64 inside JSON is acceptable for an early version; the NestJS adapter can translate either format later.
-
-It is ready when clear speech is transcribed correctly, silence returns empty text, corrupt audio returns a controlled error, two simultaneous demo requests do not crash it, and its health check confirms the model is loaded.
+See [`apps/stt/README.md`](../apps/stt/README.md) for the full contract, model layout, and tests.

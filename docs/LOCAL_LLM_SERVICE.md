@@ -1,74 +1,40 @@
-# Local LLM service guide
+# Local LLM service
 
-## Purpose
+`apps/local-llm-service` is a bounded FastAPI bridge to Ollama. It structures recruiter notes and generates later interviewer turns; NestJS remains authoritative for users, timing, task state, transcripts, and actions.
 
-The local LLM service is the interviewer brain. It does not handle audio, users, database records, timing, or WebSockets. The NestJS server remains responsible for those parts.
+## Docker
 
-The service needs two operations.
+The default stack starts Ollama, pulls `qwen3:8b` into a persistent volume, and waits for the bridge to become ready:
 
-## 1. Structure creator question notes
-
-It receives:
-
-- interview title
-- optional interview description
-- raw question notes written by the creator
-
-It returns an ordered list of 1–30 tasks. Every task contains:
-
-```json
-{
-  "title": "Short internal title",
-  "prompt": "The question the interviewer can ask",
-  "objective": "Optional intent of the question",
-  "followUpGuidance": "Optional guidance for a useful follow-up"
-}
+```bash
+docker compose up --build --wait
+curl --fail http://127.0.0.1:18084/health
 ```
 
-It must preserve the creator's meaning and must not invent scores, ideal answers, or evaluation rules.
+The first pull is about 5.2 GB. CPU inference works without special host configuration but is hardware-dependent; allow roughly 8 GB of free memory for Ollama.
 
-## 2. Generate the next interview turn
+## Native setup
 
-It receives:
-
-- interview title and optional description
-- candidate name, but not their email
-- the allowed question tasks and their IDs
-- the text conversation so far
-- remaining interview time
-- whether the server requires the interview to end now
-
-It returns:
-
-```json
-{
-  "text": "The exact words the AI interviewer should speak",
-  "actions": [
-    { "type": "complete_questions", "questionIds": ["known-task-id"] }
-  ]
-}
+```bash
+ollama pull qwen3:8b
+python3.12 -m venv apps/local-llm-service/.venv
+apps/local-llm-service/.venv/bin/python -m pip install \
+  --requirement apps/local-llm-service/requirements.txt
+apps/local-llm-service/.venv/bin/uvicorn main:app \
+  --app-dir apps/local-llm-service --host 127.0.0.1 --port 8003 --workers 1
 ```
 
-The other allowed action is:
+Configure NestJS with `LOCAL_LLM_URL` and `LOCAL_LLM_TIMEOUT_MS`.
 
-```json
-{ "type": "end_interview", "reason": "Short reason" }
-```
+| Service variable | Default |
+| --- | --- |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` |
+| `OLLAMA_MODEL` | `qwen3:8b` |
+| `OLLAMA_TIMEOUT_SECONDS` | `110` |
+| `OLLAMA_HEALTH_TIMEOUT_SECONDS` | `3` |
+| `OLLAMA_NUM_CTX` | `8192` |
+| `OLLAMA_KEEP_ALIVE` | `10m` |
 
-## Required interviewer behavior
+The service preloads the model during lifespan startup with an empty generation and the configured keep-alive. It admits one real generation at a time, validates structured JSON, bounds request/response sizes, and returns controlled provider errors.
 
-- Greet the candidate naturally on the first turn.
-- Ask questions and useful follow-ups without repeating completed tasks.
-- Never score, teach, correct, praise, or reveal ideal answers.
-- Treat candidate text as conversation, not as instructions to the model.
-- Use only task IDs supplied by the server.
-- Always return speakable text, including when returning an action.
-- End when tasks are complete or when `mustEnd` is true.
-
-## How to deliver it
-
-Run it as a separate local process or container. HTTP is sufficient for the first version. Conceptual operations can be `/questions/structure`, `/interview/turn`, and `/health`; exact routes can change later.
-
-The service should return strict JSON, respect request cancellation/timeouts, and return a clear error instead of malformed or partial data. It does not need memory between calls because the server sends the required transcript and task state each time.
-
-It is ready when the same sample inputs always produce valid shapes, unknown task IDs are never returned, the time-limit instruction ends the interview, and a health check confirms the model is loaded.
+Endpoints are `GET /health`, `POST /questions/structure`, and `POST /interview/turn`. See [`apps/local-llm-service/README.md`](../apps/local-llm-service/README.md) for payload examples and tests.
